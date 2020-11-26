@@ -1,9 +1,13 @@
-/* 
- * Rotating DC Motor with rotation feedback by a Potentiometer
- * - Serial inputs are added for testing purposes
- * 
- * Created by Furkan Cetin on 24/11/2020
- */
+/*
+   Rotating DC Motor with rotation feedback by a Potentiometer
+   - Serial inputs are added for testing purposes
+
+   Created by Furkan Cetin on 24/11/2020
+   Modified on 27/11/2020:
+    - Renaming with variables
+    - Baudrate changed to  9600
+    - New Functions are added
+*/
 
 //Pin Definitions
 #define pinReset 4
@@ -15,14 +19,24 @@
 #define pinPotans A2
 #define pinCurrentSense A3
 
+#define BYTE_SET_ANGLE_TARGET_ABS     'a'
+#define BYTE_SET_ANGLE_TARGET_REL     'r'
+#define BYTE_SET_ANGLE_RANGE          'm'
+#define BYTE_SET_ANGLE_CENTER_TO_NOW  'c'
+#define BYTE_SET_PWM_MAX              'p'
 
-int ROTATE_PWM_MAX = 55; //255 is ultimate maximum
-float ROTATE_ACC = 0.1;
+float CONST_ANGLE_TO_BITS = 1024.0 / 300.0;
 
-float posNow = 0;
-float posTarget = 0;
+int PWM_MAX = 190;
 
-float speedMotor = 0;
+int ANGLE_RANGE = 65 *  CONST_ANGLE_TO_BITS;
+float ANGLE_ACC = 255 * 0.5; // final acc = ANGLE_ACC/255
+float ANGLE_CENTER = 512;
+
+float angleTarget = 0;
+float angleNow = 0;
+
+float pwmMotor = 0;
 
 // Simple sign function in math
 int sign(float a) {
@@ -33,7 +47,7 @@ int sign(float a) {
 
 
 void setup() {
-  Serial.begin(115200);
+  Serial.begin(9600);
 
   pinMode(pinReset, OUTPUT);
   digitalWrite(pinReset, 1);
@@ -49,46 +63,100 @@ void setup() {
   digitalWrite(pinPwmL, 1);
 
   delay(200);
-  posNow = analogRead(pinPotans);
-  posTarget = posNow;
+
+  //angleNow = analogRead(pinPotans);
+  angleTarget = ANGLE_CENTER;
 }
-
-// _speed = [-255,255]
-void setMotor(int _speed) { 
-  _speed = min(255, max(-255, _speed));
-
-  analogWrite(pinPwmR, abs(_speed));
-
-  if (_speed > 0)
-    digitalWrite(pinDir, 1);
-  else
-    digitalWrite(pinDir, 0);
-
-}
-
 
 void loop() {
-  posNow = analogRead(pinPotans);
-  speedMotor += sign(posTarget - posNow) * ROTATE_ACC;
+  //CALCULATION LAYER
+  angleNow = analogRead(pinPotans);
+  pwmMotor += sign(angleTarget - angleNow) * 5.0;
 
-  if (abs(posTarget - posNow) < 1)
-    speedMotor = 0;
-
-  speedMotor = min(ROTATE_PWM_MAX, max(-ROTATE_PWM_MAX, speedMotor));
-  setMotor(speedMotor);
-
-  Serial.println(speedMotor);
-
-  //For basic testing
-  if (Serial.available()) {
-    char data = Serial.read();
-
-    if (data >= '0' && data <= '9') {
-      if (posTarget < 1000 && posNow < 1000)
-        if (posTarget > 100 && posNow > 100)
-          posTarget += (data - '5')*3;
-
-    }
+  if (abs(angleTarget - angleNow) < 4)
+  {
+    pwmMotor = 0;
+    angleTarget = angleNow;
   }
 
+  //ACTUATION LAYER
+  if (pwmMotor > 0) {
+    pwmMotor = min(pwmMotor, PWM_MAX);
+    digitalWrite(pinDir, 1);
+  }
+  else {
+    pwmMotor = max(pwmMotor, -PWM_MAX);
+    digitalWrite(pinDir, 0);
+  }
+
+  analogWrite(pinPwmR, abs(pwmMotor));
+
+  //Serial.print(angleNow);
+  //Serial.print("|");
+  //Serial.println(pwmMotor);
+
+  Serial.write(255);
+  Serial.write(int((ANGLE_CENTER - angleNow) / CONST_ANGLE_TO_BITS) );
+  Serial.write(int(pwmMotor));
+
+  //COMMUNICATION LAYER
+  while (Serial.available() >= 3) {
+    if (Serial.read() == 255) {
+      char msgType = Serial.read();
+      int  msgData = Serial.read();
+
+      if (msgType == BYTE_SET_ANGLE_TARGET_ABS) {
+        setAngleTargetAbs(msgData - 127);
+      }
+      else if (msgType == BYTE_SET_ANGLE_TARGET_REL) {
+        setAngleTargetRel(msgData - 127);
+      }
+      else if (msgType == BYTE_SET_ANGLE_RANGE) {
+        setAngleRange(msgData);
+      }
+      else if (msgType == BYTE_SET_ANGLE_CENTER_TO_NOW) {
+        if (msgData == BYTE_SET_ANGLE_CENTER_TO_NOW)
+          setAngleCenter();
+      }
+      else if (msgType == BYTE_SET_PWM_MAX) {
+        setPwmMax(msgData);
+      }
+    }
+  }
+}
+
+
+void setAngleTargetAbs(int _angle) { //_angle: [-127,+127]
+  _angle = min(90, max(_angle, -90));
+
+  float angleTargetPre = angleTarget;
+  angleTarget = ANGLE_CENTER + _angle * CONST_ANGLE_TO_BITS ;
+
+  if (sign(angleTargetPre - angleNow) != sign(angleTarget - angleNow))
+  {
+    pwmMotor = 0;
+  }
+}
+
+void setAngleTargetRel(int _angle) { //_angle: [-127,+127]
+  angleTarget += _angle * CONST_ANGLE_TO_BITS;
+  angleTarget = min(ANGLE_CENTER + ANGLE_RANGE, max(angleTarget, ANGLE_CENTER - ANGLE_RANGE));
+}
+
+void setAngleRange(int _angle) {      //_angle: [-127,+127]
+  if (pwmMotor == 0) {
+    _angle = min(65, max(_angle, 5));
+    ANGLE_RANGE = _angle * CONST_ANGLE_TO_BITS;
+  }
+}
+
+void setAngleCenter() {
+  if (pwmMotor == 0)
+    ANGLE_CENTER = angleNow;
+}
+
+void setPwmMax(int _pwm) {
+  _pwm = min(255, max(_pwm, 0));
+  if (pwmMotor < _pwm)
+    PWM_MAX = _pwm;
 }
